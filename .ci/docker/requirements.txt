@@ -1,3 +1,8 @@
+--find-links https://download.pytorch.org/whl/torch_stable.html
+torch==2.3.1+cu121
+
+mpi4py
+
 torchdata >= 0.8.0
 datasets >= 2.21.0
 tomli >= 1.1.0 ; python_version < "3.11"
