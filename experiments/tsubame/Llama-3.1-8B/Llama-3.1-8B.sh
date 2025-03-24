@@ -56,7 +56,7 @@ mkdir -p ${CHECKPOINT_DIR}
 # wandb
 export WANDB_ENTITY="okoge"
 export WANDB_PROJECT="torchtitan"
-export WANDB_JOB_NAME="llama-3.1-8B"
+export WANDB_NAME="llama-3.1-8B"
 
 # run training
 mpirun -np $NUM_GPUS \
