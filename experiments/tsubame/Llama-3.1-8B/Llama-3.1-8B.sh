@@ -44,13 +44,68 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 # training config
 CONFIG_FILE=torchtitan/models/llama/train_configs/llama3_8b.toml
 
+# distributed settings
+TENSOR_PARALLEL_SIZE=2
+PIPELINE_PARALLEL_SIZE=1
+CONTEXT_PARALLEL_SIZE=1
+DATA_PARALLEL_SIZE=$((${NUM_GPUS} / (${TENSOR_PARALLEL_SIZE} * ${PIPELINE_PARALLEL_SIZE})))
+
+DISTRIBUTED_ARGS="
+  --parallelism.enable_compiled_autograd \
+  --parallelism.tensor_parallel_degree ${TENSOR_PARALLEL_SIZE} \
+  --parallelism.enable_async_tensor_parallel \
+  --parallelism.context_parallel_degree ${CONTEXT_PARALLEL_SIZE} \
+"
+if $PIPELINE_PARALLEL_SIZE -gt 1; then
+  NUM_MICRO_BATCHES=$((${GLOBAL_BATCH_SIZE} / (${MICRO_BATCH_SIZE} / ${DATA_PARALLEL_SIZE})))
+
+  DISTRIBUTED_ARGS="${DISTRIBUTED_ARGS} --parallelism.pipeline_parallel_degree ${PIPELINE_PARALLEL_SIZE} \
+  --parallelism.pipeline_parallel_schedule "1F1B" \
+  --parallelism.pipeline_parallel_microbatches ${NUM_MICRO_BATCHES} \
+  "
+  # schedule: 1F1B, Interleaved1F1B, FlexibleInterleaved1F1B, LoopedBFS, InterleavedZeroBubble
+  # ref: https://github.com/pytorch/pytorch/blob/de4c2a3b4e89d96334dc678d1c3f2ae51a6630a0/torch/distributed/pipelining/schedules.py#L2161
+else
+  DISTRIBUTED_ARGS="${DISTRIBUTED_ARGS}"
+fi
+
+# training config
+MICRO_BATCH_SIZE=2
+GLOBAL_BATCH_SIZE=1024  # torchtitan doesn't support global batch size
+SEQUENCE_LENGTH=8192
+
+TRAIN_STEPS=27500
+LR_DECAY_ITERS=27500
+
+LR=2.5E-5
+MIN_LR=2.5E-6
+LR_WARMUP_STEPS=1000
+WEIGHT_DECAY=0.1
+GRAD_CLIP=1
+
+TRAINING_CONFIGS="
+  --training.batch_size ${MICRO_BATCH_SIZE} \
+  --training.seq_len ${SEQUENCE_LENGTH} \
+  --training.max_norm ${GRAD_CLIP} \
+  --training.steps ${TRAIN_STEPS} \
+  --training.mixed_precision_param "bfloat16" \
+  --training.mixed_precision_reduce "float32" \
+  --training.compile \
+  --optimizer.name "AdamW" \
+  --optimizer.lr ${LR} \
+  --lr_scheduler.warmup_steps ${LR_WARMUP_STEPS} \
+  --lr_scheduler.decay_type "cosine" \
+  --lr_scheduler.min_lr ${MIN_LR} \
+"
+
 # output directory
-OUTPUT_DIR=/gs/bs/tga-NII-LLM/checkpoints
-OUTPUT_DIR=${OUTPUT_DIR}/torchtitan/llama-3.1-8B/output
+OUTPUT_DIR=/gs/bs/tga-NII-LLM/checkpoints/torchtitan/llama-3.1-8B
+OUTPUT_DIR=${OUTPUT_DIR}/output
+PROFILE_DIR=${OUTPUT_DIR}/profiles
+CHECKPOINT_DIR=${OUTPUT_DIR}/checkpoints
+
 mkdir -p ${OUTPUT_DIR}
-PROFILE_DIR=${OUTPUT_DIR}/torchtitan/llama-3.1-8B/profiles
 mkdir -p ${PROFILE_DIR}
-CHECKPOINT_DIR=${OUTPUT_DIR}/torchtitan/llama-3.1-8B/checkpoints
 mkdir -p ${CHECKPOINT_DIR}
 
 # wandb
@@ -74,6 +129,8 @@ mpirun -np $NUM_GPUS \
   python torchtitan/train.py \
     --job.config_file $CONFIG_FILE \
     --job.dump_folder ${OUTPUT_DIR} \
+    ${TRAINING_CONFIGS} \
+    ${DISTRIBUTED_ARGS} \
     --profiling.save_traces_folder ${PROFILE_DIR} \
     --checkpoint.folder ${CHECKPOINT_DIR} \
     --metrics.enable_wandb
